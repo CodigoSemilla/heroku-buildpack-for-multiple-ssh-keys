@@ -1,4 +1,4 @@
 #!/bin/bash
 
-echo "heroku-buildpack-ssh-key"
+echo "heroku-buildpack-for-multi-ssh-keys"
 exit 0

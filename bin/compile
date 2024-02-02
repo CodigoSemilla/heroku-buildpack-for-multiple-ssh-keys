@@ -1,37 +1,75 @@
 #!/bin/bash
 
+# This script sets up multiple SSH keys for use with Heroku builds, especially for accessing private Git repositories.
+# It is designed to work with Heroku config variables that store SSH keys.
+# Each SSH key should be stored in a Heroku config variable with a prefix "BSK_".
+
+# Exit immediately if a command exits with a non-zero status.
 set -e
 
+# Function to indent the output for better readability in logs.
 indent() {
   sed -u 's/^/       /'
 }
 
-echo "-----> Install heroku-buildpack-ssh-key"
+echo "-----> Install heroku-buildpack-multi-ssh-keys" | indent
 
+# BUILD_DIR is the build directory provided by Heroku, typically /tmp/build_[hash]
+# ENV_DIR is the directory containing environment variables set by Heroku
 BUILD_DIR=$1
-VENDOR_DIR="$BUILD_DIR/vendor"
 ENV_DIR=$3
 
-# adapted from SectorLabs/heroku-buildpack-git-submodule
-BUILDPACK_SSH_KEY=$(<"$ENV_DIR/BUILDPACK_SSH_KEY")
-
-if [[ -z $BUILDPACK_SSH_KEY ]]; then
-    echo "Did you forget to set BUILDPACK_SSH_KEY?" | indent
-    exit 1
-fi
-
+# Create the .ssh directory and set the appropriate permissions
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-# ignore/hide ssh warnings
-echo "Host *" >> ~/.ssh/config
-echo "   StrictHostKeyChecking no" >> ~/.ssh/config
-echo "   UserKnownHostsFile /dev/null" >> ~/.ssh/config
-echo "   LogLevel ERROR" >> ~/.ssh/config
-echo "-----> Installed SSH key from BUILDPACK_SSH_KEY"
+# Create an empty SSH config file and set its permissions
+touch ~/.ssh/config
+chmod 600 ~/.ssh/config
 
-# install the ssh key
+# Counter to keep track of the number of SSH keys processed
+bsk_count=0
+
+# Iterate over all Heroku config vars in the ENV_DIR
+for env_file in "$ENV_DIR"/BSK_*; do
+    # Extract the name of the config var
+    name=$(basename "$env_file")
+    # Read the value of the config var (SSH key content)
+    value=$(cat "$env_file")
+
+    # Extract the key part from the variable name, removing the 'BSK_' prefix
+    # Convert the key part to lowercase for consistent naming
+    key_part_upper=${name#BSK_}
+    key_part_lower=$(echo "${name#BSK_}" | tr '[:upper:]' '[:lower:]')
+
+    # Check if the SSH key is empty
+    if [[ -z $value ]]; then
+        echo "Did you forget to set $name?" | indent
+        exit 1
+    else
+        bsk_count=$((bsk_count + 1))
+        echo "-----> Found SSH key for $name" | indent
+
+        # Configure SSH to use the key, associating it with a custom host in the SSH config
+        echo "Host github.com_$key_part_lower" >> ~/.ssh/config
+        echo "   HostName github.com" >> ~/.ssh/config
+        echo "   IdentityFile ~/.ssh/id_rsa_$key_part_lower" >> ~/.ssh/config
+        echo "   IdentitiesOnly yes" >> ~/.ssh/config
+        echo "   StrictHostKeyChecking no" >> ~/.ssh/config
+        echo "   UserKnownHostsFile /dev/null" >> ~/.ssh/config
+        echo "   LogLevel debug1" >> ~/.ssh/config
+
+        # Write the SSH key to a file and set its permissions
+        echo "$value" > ~/.ssh/id_rsa_$key_part_lower
+        chmod 600 ~/.ssh/id_rsa_$key_part_lower
+        echo "-----> Installed SSH key for $key_part_lower" | indent
+    fi
+done
+
+# Add github.com to known hosts to prevent SSH from asking to trust it on first connect
 ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2> /dev/null
-cat "$ENV_DIR/BUILDPACK_SSH_KEY" > ~/.ssh/id_rsa
-echo >> ~/.ssh/id_rsa
-chmod 600 ~/.ssh/id_rsa
+# Ensure the SSH config file has the correct permissions
+chmod 600 ~/.ssh/config
+
+# Example: If you have a Heroku config var named BSK_PRIVATE_REPO, this script will process it,
+# creating an SSH config entry for 'github.com_private_repo' and an associated identity file.
